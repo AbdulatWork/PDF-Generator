@@ -1,0 +1,15 @@
+Invoice Number: [Invoice Number]
+Date: [Invoice Date]
+
+Billed To:
+[Customer Name]
+[Customer Address]
+
+Description                     Quantity     Unit Price      Total
+[Item Description]              [Qty]        [Price]         [Total]
+
+Subtotal: [Subtotal Amount]
+Tax: [Tax Amount]
+Total Amount Due: [Total Amount]
+
+Thank you for your business!
