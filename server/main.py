@@ -1,21 +1,47 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 import os
-from flask_cors import CORS  # Import CORS
+from flask_cors import CORS
 from groq import Groq
+from fpdf import FPDF
+
+
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
+
+
+
 
 app = Flask(__name__)
-CORS(app)  # Enable CORS for all routes
-
+CORS(app)
 
 UPLOAD_FOLDER = './uploads'
 TEMPLATE_FOLDER = './templates'
+PDF_FOLDER = './pdfs'
 ALLOWED_EXTENSIONS = {'csv', 'json', 'xml'}
 
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['TEMPLATE_FOLDER'] = TEMPLATE_FOLDER
+app.config['PDF_FOLDER'] = PDF_FOLDER
+
+
+
+# Email Configuration
+EMAIL_HOST = "smtp.gmail.com"  # Use your email provider's SMTP server
+EMAIL_PORT = 587
+EMAIL_ADDRESS = "syedshhasnain7@gmail.com"  # Replace with your email address
+EMAIL_PASSWORD = "nntdloiflsrfaaag"  # Replace with your email password
+
+
+
+
 
 if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
+if not os.path.exists(PDF_FOLDER):
+    os.makedirs(PDF_FOLDER)
 
 # Configure Groq API Key
 GROQ_API_KEY = "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"
@@ -39,7 +65,7 @@ def populate_template_with_groq(template, user_content):
     # Set the system prompt
     system_prompt = {
         "role": "system",
-        "content": "You are a document generator. Merge the provided template and user content to generate a polished document."
+        "content": "You are a document generator. Your task is to merge the provided template and user content to generate a polished document. Only output the final document text without any additional explanations or introductions."
     }
 
     # Initialize chat history
@@ -59,6 +85,27 @@ def populate_template_with_groq(template, user_content):
     # Extract response content
     generated_output = response.choices[0].message.content
     return generated_output
+
+
+def generate_pdf(content, filename):
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+    pdf.set_font("Arial", size=12)
+
+    # Split content into paragraphs and handle line wrapping
+    lines = content.splitlines()
+    line_height = 10  # Height of each line
+    for line in lines:
+        if len(line.strip()) == 0:
+            pdf.ln(line_height)  # Add extra spacing for blank lines
+        else:
+            pdf.multi_cell(0, line_height, txt=line)
+
+    # Save the PDF file
+    pdf_path = os.path.join(app.config['PDF_FOLDER'], filename)
+    pdf.output(pdf_path)
+    return pdf_path
 
 
 @app.route('/upload', methods=['POST'])
@@ -91,13 +138,83 @@ def upload_file():
     # Populate the template using Groq
     populated_template = populate_template_with_groq(template_content, user_content)
 
-    # Respond with the populated template
+    # Generate PDF from the populated template
+    pdf_filename = f"{template_name}_{os.path.splitext(file.filename)[0]}.pdf"
+    pdf_path = generate_pdf(populated_template, pdf_filename)
+
+    # Respond with the populated template and PDF download link
     response_data = {
         "message": "Template populated successfully!",
-        "populated_template": populated_template
+        "populated_template": populated_template,
+        "pdf_url": f"/download/{pdf_filename}"
     }
 
     return jsonify(response_data), 200
+
+
+@app.route('/download/<filename>', methods=['GET'])
+def download_pdf(filename):
+    pdf_path = os.path.join(app.config['PDF_FOLDER'], filename)
+    if os.path.exists(pdf_path):
+        return send_file(pdf_path, as_attachment=True)
+    return jsonify({"error": "File not found"}), 404
+
+
+
+
+def send_email(recipient_email, pdf_path, subject="Your Generated PDF", body="Please find the attached PDF."):
+    try:
+        # Create the email object
+        message = MIMEMultipart()
+        message['From'] = EMAIL_ADDRESS
+        message['To'] = recipient_email
+        message['Subject'] = subject
+
+        # Attach the email body
+        message.attach(MIMEText(body, 'plain'))
+
+        # Attach the PDF file
+        with open(pdf_path, 'rb') as attachment:
+            mime_base = MIMEBase('application', 'octet-stream')
+            mime_base.set_payload(attachment.read())
+            encoders.encode_base64(mime_base)
+            mime_base.add_header('Content-Disposition', f'attachment; filename={os.path.basename(pdf_path)}')
+            message.attach(mime_base)
+
+        # Connect to the email server and send the email
+        with smtplib.SMTP(EMAIL_HOST, EMAIL_PORT) as server:
+            server.starttls()  # Upgrade to a secure encrypted connection
+            server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
+            server.send_message(message)
+
+        return True
+    except Exception as e:
+        print(f"Error sending email: {e}")
+        return False
+
+
+@app.route('/send-email', methods=['POST'])
+def send_email_endpoint():
+    data = request.get_json()
+    recipient_email = data.get('email')
+    pdf_filename = data.get('pdf_filename')
+
+    if not recipient_email or not pdf_filename:
+        return jsonify({"error": "Email address and PDF filename are required"}), 400
+
+    pdf_path = os.path.join(app.config['PDF_FOLDER'], pdf_filename)
+    if not os.path.exists(pdf_path):
+        return jsonify({"error": "PDF file not found"}), 404
+
+    # Send the email
+    email_sent = send_email(recipient_email, pdf_path)
+
+    if email_sent:
+        return jsonify({"message": "Email sent successfully!"}), 200
+    else:
+        return jsonify({"error": "Failed to send email"}), 500
+
+
 
 
 if __name__ == '__main__':
