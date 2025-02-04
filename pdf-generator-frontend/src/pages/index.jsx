@@ -1,13 +1,20 @@
-import React, { useState } from "react";
+import React, { useState,useRef } from "react";
+import { UserButton } from "@clerk/clerk-react";
 
 const FileUpload = () => {
   const [file, setFile] = useState(null);
   const [template, setTemplate] = useState("");
   const [message, setMessage] = useState("");
   const [populatedTemplate, setPopulatedTemplate] = useState("");
-  const [pdfUrl, setPdfUrl] = useState(""); // State to store the PDF download link
-  const [email, setEmail] = useState(""); // State to store the email address
-  const [emailStatus, setEmailStatus] = useState(""); // State to show email status
+  const [pdfUrl, setPdfUrl] = useState("");
+  const [email, setEmail] = useState("");
+  const [emailStatus, setEmailStatus] = useState("");
+  const fileInputRef = useRef(null);
+  const [ccEmails, setCcEmails] = useState("");
+
+const handleCcEmailChange = (event) => {
+  setCcEmails(event.target.value);
+};
 
   const handleFileChange = (event) => {
     setFile(event.target.files[0]);
@@ -17,8 +24,9 @@ const FileUpload = () => {
     setTemplate(event.target.value);
   };
 
-  const handleEmailChange = (event) => {
-    setEmail(event.target.value);
+ 
+  const handleUploadClick = () => {
+    fileInputRef.current.click();
   };
 
   const handleUpload = async () => {
@@ -43,12 +51,12 @@ const FileUpload = () => {
       });
 
       const result = await response.json();
-      console.log(result); // Log the backend response
+      console.log(result);
 
       if (response.ok) {
         setMessage(result.message || "Upload successful!");
         setPopulatedTemplate(result.populated_template || "");
-        setPdfUrl(`http://127.0.0.1:5000${result.pdf_url}`); // Store the PDF URL
+        setPdfUrl(`http://127.0.0.1:5000${result.pdf_url}`);
       } else {
         setMessage(result.error || "Upload failed.");
         setPopulatedTemplate("");
@@ -67,12 +75,12 @@ const FileUpload = () => {
       setEmailStatus("Please enter an email address.");
       return;
     }
-
+  
     if (!pdfUrl) {
       setEmailStatus("Please generate a document first.");
       return;
     }
-
+  
     try {
       const response = await fetch("http://127.0.0.1:5000/send-email", {
         method: "POST",
@@ -81,16 +89,17 @@ const FileUpload = () => {
         },
         body: JSON.stringify({
           email,
-          pdf_filename: pdfUrl.split("/").pop(), // Extract the filename from the URL
+          ccEmails: ccEmails.split(",").map(email => email.trim()), // Convert to array
+          pdf_filename: pdfUrl.split("/").pop(),
         }),
       });
-
+  
       const result = await response.json();
-      console.log(result); // Log the backend response
-
+      console.log(result);
+  
       if (response.ok) {
         setEmailStatus("Email sent successfully!");
-        setMessage(""); // Clear general messages if any
+        setMessage("");
       } else {
         setEmailStatus(result.error || "Failed to send email.");
       }
@@ -99,82 +108,115 @@ const FileUpload = () => {
       setEmailStatus("An error occurred while sending the email.");
     }
   };
-
+  
   return (
-    <div className="flex flex-col items-center p-6">
-      <h1 className="text-2xl font-bold mb-4">Upload a Dataset</h1>
+    <div className="min-h-screen flex flex-col">
+      {/* Navbar */}
+      <nav className="w-full bg-gray-800 text-white py-4 px-6 flex justify-between items-center shadow-md">
+        <h1 className="text-xl font-bold">PDF Generator</h1>
+        <UserButton />
+      </nav>
 
-      {/* File Input */}
-      <input
-        type="file"
-        accept=".csv, .json, .xml"
-        onChange={handleFileChange}
-        className="mb-4"
-      />
-
-      {/* Template Selection */}
-      <select
-        value={template}
-        onChange={handleTemplateChange}
-        className="mb-4 border rounded px-3 py-2 w-64"
-      >
-        <option value="">Select a Template</option>
-        <option value="business_letter">Business Letter</option>
-        <option value="coursework_feedback">Coursework Feedback</option>
-        <option value="invoice">Invoice</option>
-      </select>
-
-      {/* Upload Button */}
-      <button
-        onClick={handleUpload}
-        className="bg-blue-500 text-white py-2 px-4 rounded hover:bg-blue-600"
-      >
-        Upload
-      </button>
-
-      {/* Message Display */}
-      {message && <p className="mt-4 text-lg">{message}</p>}
-
-      {/* Populated Template Display */}
-      {populatedTemplate && (
-        <div className="mt-6 p-4 border rounded-lg shadow-lg bg-gray-50 w-full max-w-2xl">
-          <h2 className="text-xl font-semibold mb-4">Generated Document</h2>
-          <pre className="whitespace-pre-wrap text-gray-800">{populatedTemplate}</pre>
-        </div>
-      )}
-
-      {/* PDF Download Link */}
-      {pdfUrl && (
-        <a
-          href={pdfUrl}
-          download
-          className="mt-4 bg-green-500 text-white py-2 px-4 rounded hover:bg-green-600"
+      {/* Main Content */}
+      <div className="flex flex-col items-center p-6">
+        <h1 className="text-2xl font-bold mb-4">Upload a Dataset</h1>
+        {/* File Upload Button */}
+        <input
+          type="file"
+          accept=".csv, .json, .xml"
+          ref={fileInputRef}
+          onChange={handleFileChange}
+          className="hidden"
+        />
+        <button
+          onClick={handleUploadClick}
+          className="mt-4 mb-4 text-black py-2 px-4 rounded-xl border-2 hover:bg-black hover:text-white hover:cursor-pointer"
         >
-          Download PDF
-        </a>
-      )}
+          Upload File
+        </button>
 
-      {/* Email Input and Send Button */}
-      {pdfUrl && (
-        <div className="mt-6 w-full max-w-md">
-          <input
-            type="email"
-            placeholder="Enter recipient's email"
-            value={email}
-            onChange={handleEmailChange}
-            className="mb-4 border rounded px-3 py-2 w-full"
-          />
-          <button
-            onClick={handleSendEmail}
-            className="bg-green-500 text-white py-2 px-4 rounded hover:bg-green-600"
+        {/* Display Selected File */}
+        {file && <p className="mt-2 text-lg">Selected File: {file.name}</p>}
+
+        {/* Template Selection */}
+        <select
+          value={template}
+          onChange={handleTemplateChange}
+          className="mb-4 border rounded px-3 py-2 w-64"
+        >
+          <option value="">Select a Template</option>
+          <option value="business_letter">Business Letter</option>
+          <option value="coursework_feedback">Coursework Feedback</option>
+          <option value="invoice">Invoice</option>
+        </select>
+
+        {/* Upload Button */}
+        <button
+          onClick={handleUpload}
+          className="mt-4 text-black py-2 px-4 rounded-xl border-2 hover:bg-black hover:text-white hover:cursor-pointer"
+        >
+          Generate
+        </button>
+
+        {/* Message Display */}
+        {message && <p className="mt-4 text-lg">{message}</p>}
+
+        {/* Populated Template Display */}
+        {populatedTemplate && (
+          <div className="mt-6 p-4 border rounded-lg shadow-lg bg-gray-50 w-full max-w-2xl">
+            <h2 className="text-xl font-semibold mb-4">Generated Document</h2>
+            <pre className="whitespace-pre-wrap text-gray-800">{populatedTemplate}</pre>
+          </div>
+        )}
+
+        {/* PDF Download Link */}
+        {pdfUrl && (
+          <a
+            href={pdfUrl}
+            download
+            className="mt-4 text-black py-2 px-4 rounded-xl border-2 hover:bg-black hover:text-white hover:cursor-pointer"
           >
-            Send Email
-          </button>
-        </div>
-      )}
+            Download PDF
+          </a>
+        )}
 
-      {/* Email Status Notification */}
-      {emailStatus && <p className="mt-4 text-lg text-blue-600">{emailStatus}</p>}
+        {/* Email Input and Send Button */}
+{pdfUrl && (
+  <div className="mt-6 w-full max-w-md">
+    {/* Recipient Email Input */}
+    <input
+      type="email"
+      placeholder="Enter recipient's email"
+      value={email}
+      onChange={(e) => setEmail(e.target.value)}
+      className="mb-4 border rounded px-3 py-2 w-full"
+    />
+    
+    {/* CC Email Input */}
+    <input
+      type="text"
+      placeholder="Enter CC emails (comma-separated)"
+      value={ccEmails}
+      onChange={handleCcEmailChange}
+      className="mb-4 border rounded px-3 py-2 w-full"
+    />
+
+    {/* Send Email Button */}
+    <div className="flex items-center justify-center">
+      <button
+        onClick={handleSendEmail}
+        className="mt-4 text-black py-2 px-4 rounded-xl border-2 hover:bg-black hover:text-white hover:cursor-pointer"
+      >
+        Send Email
+      </button>
+    </div>
+  </div>
+)}
+
+
+        {/* Email Status Notification */}
+        {emailStatus && <p className="mt-4 text-lg text-blue-600">{emailStatus}</p>}
+      </div>
     </div>
   );
 };

@@ -3,6 +3,7 @@ import os
 from flask_cors import CORS
 from groq import Groq
 from fpdf import FPDF
+from werkzeug.utils import secure_filename
 
 
 import smtplib
@@ -13,9 +14,17 @@ from email import encoders
 
 
 
-
 app = Flask(__name__)
-CORS(app)
+
+# Allow requests from your frontend
+CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
+
+@app.after_request
+def add_cors_headers(response):
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS, DELETE"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    return response
 
 UPLOAD_FOLDER = './uploads'
 TEMPLATE_FOLDER = './templates'
@@ -37,7 +46,9 @@ EMAIL_PASSWORD = "nntdloiflsrfaaag"  # Replace with your email password
 
 
 
-
+@app.route("/", methods=["GET"])
+def home():
+    return jsonify({"message": "Flask server is running!"})
 if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
 if not os.path.exists(PDF_FOLDER):
@@ -107,7 +118,6 @@ def generate_pdf(content, filename):
     pdf.output(pdf_path)
     return pdf_path
 
-
 @app.route('/upload', methods=['POST'])
 def upload_file():
     if 'file' not in request.files or 'template' not in request.form:
@@ -122,8 +132,9 @@ def upload_file():
     if not allowed_file(file.filename):
         return jsonify({"error": "File type not allowed"}), 400
 
-    # Save the uploaded file
-    file_path = os.path.join(app.config['UPLOAD_FOLDER'], file.filename)
+    # Secure filename and save file
+    filename = secure_filename(file.filename)
+    file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
     file.save(file_path)
 
     # Load the selected template
@@ -131,16 +142,20 @@ def upload_file():
     if not template_content:
         return jsonify({"error": "Template not found"}), 400
 
-    # Read user content from the uploaded file
-    with open(file_path, 'r') as uploaded_file:
-        user_content = uploaded_file.read()
+    try:
+        # Read user content safely
+        with open(file_path, 'rb') as uploaded_file:
+            user_content = uploaded_file.read().decode('utf-8', errors='ignore')
+    except Exception as e:
+        return jsonify({"error": f"Failed to read file: {str(e)}"}), 500
 
     # Populate the template using Groq
     populated_template = populate_template_with_groq(template_content, user_content)
 
     # Generate PDF from the populated template
-    pdf_filename = f"{template_name}_{os.path.splitext(file.filename)[0]}.pdf"
-    pdf_path = generate_pdf(populated_template, pdf_filename)
+    pdf_filename = f"{template_name}_{os.path.splitext(filename)[0]}.pdf"
+    pdf_path = generate_pdf(populated_template, pdf_filename)  # Use returned correct path
+
 
     # Respond with the populated template and PDF download link
     response_data = {
@@ -154,21 +169,24 @@ def upload_file():
 
 @app.route('/download/<filename>', methods=['GET'])
 def download_pdf(filename):
-    pdf_path = os.path.join(app.config['PDF_FOLDER'], filename)
+    pdf_path = os.path.abspath(os.path.join(app.config['PDF_FOLDER'], filename))  # Use absolute path
+
     if os.path.exists(pdf_path):
         return send_file(pdf_path, as_attachment=True)
     return jsonify({"error": "File not found"}), 404
 
 
 
-
-def send_email(recipient_email, pdf_path, subject="Your Generated PDF", body="Please find the attached PDF."):
+def send_email(recipient_email, pdf_path, cc_emails=None, subject="Your Generated PDF", body="Please find the attached PDF."):
     try:
         # Create the email object
         message = MIMEMultipart()
         message['From'] = EMAIL_ADDRESS
         message['To'] = recipient_email
         message['Subject'] = subject
+
+        if cc_emails:
+            message['Cc'] = ', '.join(cc_emails)  # Add CC recipients
 
         # Attach the email body
         message.attach(MIMEText(body, 'plain'))
@@ -181,22 +199,25 @@ def send_email(recipient_email, pdf_path, subject="Your Generated PDF", body="Pl
             mime_base.add_header('Content-Disposition', f'attachment; filename={os.path.basename(pdf_path)}')
             message.attach(mime_base)
 
+        # Create recipient list including CC emails
+        recipients = [recipient_email] + (cc_emails if cc_emails else [])
+
         # Connect to the email server and send the email
         with smtplib.SMTP(EMAIL_HOST, EMAIL_PORT) as server:
             server.starttls()  # Upgrade to a secure encrypted connection
             server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
-            server.send_message(message)
+            server.sendmail(EMAIL_ADDRESS, recipients, message.as_string())
 
         return True
     except Exception as e:
         print(f"Error sending email: {e}")
         return False
 
-
 @app.route('/send-email', methods=['POST'])
 def send_email_endpoint():
     data = request.get_json()
     recipient_email = data.get('email')
+    cc_emails = data.get('ccEmails', [])  # Get CC emails as a list
     pdf_filename = data.get('pdf_filename')
 
     if not recipient_email or not pdf_filename:
@@ -206,13 +227,14 @@ def send_email_endpoint():
     if not os.path.exists(pdf_path):
         return jsonify({"error": "PDF file not found"}), 404
 
-    # Send the email
-    email_sent = send_email(recipient_email, pdf_path)
+    # Send the email with CC recipients
+    email_sent = send_email(recipient_email, pdf_path, cc_emails)
 
     if email_sent:
         return jsonify({"message": "Email sent successfully!"}), 200
     else:
         return jsonify({"error": "Failed to send email"}), 500
+
 
 
 
