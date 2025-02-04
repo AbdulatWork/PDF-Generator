@@ -21,7 +21,7 @@ cd pdf-generator
 ### 2️⃣ Create a Virtual Environment
 Navigate to the backend folder:
 ```sh
-cd backend
+cd server
 ```
 Create a virtual environment:
 ```sh
@@ -43,7 +43,7 @@ pip install -r requirements.txt
 ```
 
 ### 4️⃣ Set Up Environment Variables
-Create a `.env` file in the `backend/` directory and add:
+Create a `.env` file in the `server/` directory and add:
 ```
 FLASK_APP=app.py
 FLASK_ENV=development
@@ -55,7 +55,7 @@ EMAIL_PASS=your-email-password
 
 ### 5️⃣ Run the Backend Server
 ```sh
-flask run
+pyhton mian.py
 ```
 The backend will run on `http://127.0.0.1:5000`
 
@@ -64,7 +64,7 @@ The backend will run on `http://127.0.0.1:5000`
 ## 🎨 Frontend Setup (React)
 ### 6️⃣ Navigate to the Frontend Directory
 ```sh
-cd ../frontend
+cd ../pdf-generatoe-frontend
 ```
 
 ### 7️⃣ Install Dependencies
@@ -74,7 +74,7 @@ npm install
 
 ### 8️⃣ Start the Frontend
 ```sh
-npm start
+npm run dev
 ```
 The frontend will run on `http://localhost:3000`
 
@@ -88,44 +88,6 @@ The frontend will run on `http://localhost:3000`
 
 ---
 
-## ✅ Deployment
-### Backend (Flask)
-```sh
-pip install gunicorn
-```
-Run:
-```sh
-gunicorn -w 4 -b 0.0.0.0:5000 app:app
-```
-
-### Frontend (React)
-```sh
-npm run build
-```
-Host the contents of the `build/` folder on a web server.
-
----
-
-## 📌 Notes
-- Ensure your email service supports SMTP for sending emails.
-- Update `CORS` settings in Flask if deploying to a different domain.
-- Use `.env` to store sensitive credentials securely.
-
----
-
-## 🛠 Troubleshooting
-If you face permission issues on Mac/Linux:
-```sh
-chmod +x venv/bin/activate
-```
-If `npm start` fails, try:
-```sh
-npm cache clean --force
-rm -rf node_modules package-lock.json
-npm install
-```
-
----
 
 ### 🎉 Enjoy your PDF Generator!
 
