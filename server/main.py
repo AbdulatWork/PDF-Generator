@@ -1,49 +1,137 @@
-from flask import Flask, request, jsonify, send_file
-import os
-from flask_cors import CORS
 from groq import Groq
 from fpdf import FPDF
+import tempfile
 from werkzeug.utils import secure_filename
-
-
 import smtplib
+from flask import Flask, request, jsonify, send_file
+import os
+import io
+from io import BytesIO  # <-- Add this line
+import pymongo
+from flask_cors import CORS
+from bson.objectid import ObjectId
+from docx2pdf import convert
+import pythoncom
+
+import gridfs
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
-
-
+from docx2pdf import convert
+import pythoncom  # Add this import
+import tempfile
 
 app = Flask(__name__)
 
-# Allow requests from your frontend
-CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
+# Allow requests only from your frontend
+CORS(app, resources={r"/*": {"origins": "http://localhost:5173"}}, supports_credentials=True)
 
 @app.after_request
 def add_cors_headers(response):
-    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Origin"] = "http://localhost:5173"
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS, DELETE"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    response.headers["Access-Control-Allow-Credentials"] = "true"
     return response
+
+
+
+# MongoDB connection
+MONGO_URI = "mongodb+srv://hasnain:hasnain123@cluster0.t2spioh.mongodb.net/"
+client = pymongo.MongoClient(MONGO_URI)
+db = client["pdf_storage"]  # Database name
+fs = gridfs.GridFS(db)  # GridFS for storing PDFs
+
+UPLOAD_FOLDER = './uploads'
+PDF_FOLDER = './pdfs'
+WORD_FOLDER = './word_files'
+
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+app.config['PDF_FOLDER'] = PDF_FOLDER
+app.config['WORD_FOLDER'] = WORD_FOLDER
+
+
 
 UPLOAD_FOLDER = './uploads'
 TEMPLATE_FOLDER = './templates'
 PDF_FOLDER = './pdfs'
-ALLOWED_EXTENSIONS = {'csv', 'json', 'xml'}
+WORD_FOLDER = './word_files'  # New folder for Word files
+ALLOWED_EXTENSIONS = {'csv', 'json', 'xml', 'doc', 'docx'}  # Updated allowed extensions
 
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['TEMPLATE_FOLDER'] = TEMPLATE_FOLDER
 app.config['PDF_FOLDER'] = PDF_FOLDER
+app.config['WORD_FOLDER'] = WORD_FOLDER  # Add Word folder to config
 
-
+# Create necessary folders
+for folder in [UPLOAD_FOLDER, PDF_FOLDER, WORD_FOLDER]:
+    if not os.path.exists(folder):
+        os.makedirs(folder)
 
 # Email Configuration
-EMAIL_HOST = "smtp.gmail.com"  # Use your email provider's SMTP server
+EMAIL_HOST = "smtp.gmail.com"
 EMAIL_PORT = 587
-EMAIL_ADDRESS = "syedshhasnain7@gmail.com"  # Replace with your email address
-EMAIL_PASSWORD = "nntdloiflsrfaaag"  # Replace with your email password
+EMAIL_ADDRESS = "syedshhasnain7@gmail.com"
+EMAIL_PASSWORD = "nntdloiflsrfaaag"
 
+# Existing code remains the same...
 
+def allowed_word_file(filename):
+    """Check if uploaded file is a Word document"""
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in {'doc', 'docx'}
+
+def convert_word_to_pdf_with_com(word_bytes):
+    try:
+        pythoncom.CoInitialize()
+        with BytesIO(word_bytes) as word_stream, BytesIO() as pdf_stream:
+            temp_word_path = "temp_word.docx"
+            temp_pdf_path = "temp_pdf.pdf"
+            
+            with open(temp_word_path, "wb") as word_file:
+                word_file.write(word_stream.getvalue())
+            
+            convert(temp_word_path, temp_pdf_path)
+            
+            with open(temp_pdf_path, "rb") as pdf_file:
+                pdf_bytes = pdf_file.read()
+            
+            os.remove(temp_word_path)
+            os.remove(temp_pdf_path)
+            return pdf_bytes
+    finally:
+        pythoncom.CoUninitialize()
+
+@app.route('/convert-word-to-pdf', methods=['POST'])
+def convert_word_to_pdf():
+    if 'file' not in request.files or 'user_id' not in request.form:
+        return jsonify({"error": "File and userId are required"}), 400
+
+    file = request.files['file']
+    user_id = request.form['user_id']
+    
+    if file.filename == '':
+        return jsonify({"error": "No selected file"}), 400
+
+    if not allowed_word_file(file.filename):
+        return jsonify({"error": "Invalid file type. Please upload a Word document (.doc or .docx)"}), 400
+
+    try:
+        word_bytes = file.read()
+        pdf_bytes = convert_word_to_pdf_with_com(word_bytes)
+        pdf_filename = os.path.splitext(secure_filename(file.filename))[0] + '.pdf'
+        
+        pdf_id = fs.put(pdf_bytes, filename=pdf_filename, userId=user_id, type="converted")
+        
+        return jsonify({
+            "message": "Conversion successful",
+            "pdf_id": str(pdf_id)
+        }), 200
+
+    except Exception as e:
+        error_message = str(e)
+        print(f"Conversion error: {error_message}")
+        return jsonify({"error": f"Conversion failed: {error_message}"}), 500
 
 
 @app.route("/", methods=["GET"])
@@ -98,7 +186,7 @@ def populate_template_with_groq(template, user_content):
     return generated_output
 
 
-def generate_pdf(content, filename):
+def generate_pdf(content):
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
@@ -113,18 +201,19 @@ def generate_pdf(content, filename):
         else:
             pdf.multi_cell(0, line_height, txt=line)
 
-    # Save the PDF file
-    pdf_path = os.path.join(app.config['PDF_FOLDER'], filename)
-    pdf.output(pdf_path)
-    return pdf_path
+    # Generate PDF as bytes
+    pdf_bytes = pdf.output(dest='S').encode('latin1')  # Generate as bytes
+
+    return BytesIO(pdf_bytes)  # Return BytesIO object
 
 @app.route('/upload', methods=['POST'])
 def upload_file():
-    if 'file' not in request.files or 'template' not in request.form:
-        return jsonify({"error": "File and template selection are required"}), 400
+    if 'file' not in request.files or 'template' not in request.form or 'user_id' not in request.form:
+        return jsonify({"error": "File, template selection, and user ID are required"}), 400
 
     file = request.files['file']
     template_name = request.form['template']
+    user_id = request.form['user_id']
 
     if file.filename == '':
         return jsonify({"error": "No selected file"}), 400
@@ -152,30 +241,32 @@ def upload_file():
     # Populate the template using Groq
     populated_template = populate_template_with_groq(template_content, user_content)
 
-    # Generate PDF from the populated template
+    # Generate PDF as a BytesIO object from the populated template
     pdf_filename = f"{template_name}_{os.path.splitext(filename)[0]}.pdf"
-    pdf_path = generate_pdf(populated_template, pdf_filename)  # Use returned correct path
+    pdf_buffer = generate_pdf(populated_template)  # Now returns BytesIO object
 
+    # Store the PDF in MongoDB GridFS
+    pdf_id = fs.put(pdf_buffer.getvalue(), filename=pdf_filename, userId=user_id, type="populated")
 
-    # Respond with the populated template and PDF download link
+    # Respond with the populated template and PDF ID for retrieval
     response_data = {
         "message": "Template populated successfully!",
         "populated_template": populated_template,
-        "pdf_url": f"/download/{pdf_filename}"
+        "pdf_url": str(pdf_id),  # Use absolute URL
+        "pdf_id": str(pdf_id)  # Return the GridFS ObjectId as a string
     }
 
     return jsonify(response_data), 200
 
-
-@app.route('/download/<filename>', methods=['GET'])
-def download_pdf(filename):
-    pdf_path = os.path.abspath(os.path.join(app.config['PDF_FOLDER'], filename))  # Use absolute path
-
-    if os.path.exists(pdf_path):
-        return send_file(pdf_path, as_attachment=True)
-    return jsonify({"error": "File not found"}), 404
-
-
+@app.route('/download/<pdf_id>', methods=['GET'])
+def download_pdf(pdf_id):
+    try:
+        pdf_file = fs.get(ObjectId(pdf_id))
+        return send_file(BytesIO(pdf_file.read()), 
+                         download_name=pdf_file.filename, 
+                         as_attachment=True)
+    except gridfs.errors.NoFile:
+        return jsonify({"error": "File not found"}), 404
 
 def send_email(recipient_email, pdf_path, cc_emails=None, subject="Your Generated PDF", body="Please find the attached PDF."):
     try:
@@ -213,22 +304,36 @@ def send_email(recipient_email, pdf_path, cc_emails=None, subject="Your Generate
         print(f"Error sending email: {e}")
         return False
 
+
+
 @app.route('/send-email', methods=['POST'])
 def send_email_endpoint():
     data = request.get_json()
     recipient_email = data.get('email')
-    cc_emails = data.get('ccEmails', [])  # Get CC emails as a list
-    pdf_filename = data.get('pdf_filename')
+    cc_emails = data.get('ccEmails', [])
+    pdf_id = data.get('pdf_id')
 
-    if not recipient_email or not pdf_filename:
-        return jsonify({"error": "Email address and PDF filename are required"}), 400
+    if not recipient_email or not pdf_id:
+        return jsonify({"error": "Email address and PDF ID are required"}), 400
 
-    pdf_path = os.path.join(app.config['PDF_FOLDER'], pdf_filename)
-    if not os.path.exists(pdf_path):
-        return jsonify({"error": "PDF file not found"}), 404
+    # ✅ Find the file using ObjectId
+    file_doc = db.fs.files.find_one({"_id": ObjectId(pdf_id)})
 
-    # Send the email with CC recipients
-    email_sent = send_email(recipient_email, pdf_path, cc_emails)
+    if not file_doc:
+        return jsonify({"error": "PDF file not found in database"}), 404
+
+    file_data = fs.get(ObjectId(pdf_id)).read()
+    
+    # ✅ Save the PDF to a temporary file
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
+        temp_pdf.write(file_data)
+        temp_pdf_path = temp_pdf.name  # ✅ Get the temporary file path
+
+    # ✅ Send email with the temp file path
+    email_sent = send_email(recipient_email, temp_pdf_path, cc_emails)
+
+    # ✅ Clean up: Delete the temp file after sending the email
+    os.remove(temp_pdf_path)
 
     if email_sent:
         return jsonify({"message": "Email sent successfully!"}), 200
@@ -236,6 +341,39 @@ def send_email_endpoint():
         return jsonify({"error": "Failed to send email"}), 500
 
 
+
+
+
+@app.route('/pdfs/<user_id>', methods=['GET'])
+def get_pdfs(user_id):
+    try:
+        word_to_pdf_files = []
+        template_pdfs = []
+
+        # Fetch all PDFs belonging to the user
+        pdfs = db.fs.files.find({"userId": user_id})  # Correct field name (case-sensitive!)
+
+        for pdf in pdfs:
+            pdf_data = {
+                "filename": pdf["filename"],
+                "pdf_id": str(pdf["_id"]),
+                "type": pdf.get("type", "unknown"),
+                "uploadDate": pdf.get("uploadDate", ""),
+            }
+
+            # Categorize files
+            if pdf_data["type"] == "converted":
+                word_to_pdf_files.append(pdf_data)
+            elif pdf_data["type"] == "populated":
+                template_pdfs.append(pdf_data)
+
+        return jsonify({
+            "word_to_pdf": word_to_pdf_files,
+            "template_pdfs": template_pdfs
+        })
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 
