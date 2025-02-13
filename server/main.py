@@ -2,6 +2,19 @@ from groq import Groq
 from fpdf import FPDF
 import tempfile
 from werkzeug.utils import secure_filename
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
+from flask import Flask, request, jsonify
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+import io
+import gridfs
+
+from bson import ObjectId
+import csv
+import smtplib
+import pandas as pd
 import smtplib
 from flask import Flask, request, jsonify, send_file
 import os
@@ -374,6 +387,208 @@ def get_pdfs(user_id):
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+
+
+def generate_pdf_bulk(student_name, student_id, criteria, max_grade, grades, feedback):
+    """Generates a PDF with student details and returns it as a BytesIO object."""
+    pdf_buffer = io.BytesIO()
+    c = canvas.Canvas(pdf_buffer, pagesize=letter)
+
+    # PDF Content
+    c.setFont("Helvetica-Bold", 14)
+    c.drawString(100, 750, "Student Report")
+    c.setFont("Helvetica", 12)
+    c.drawString(100, 730, f"Name: {student_name}")
+    c.drawString(100, 710, f"Student ID: {student_id}")
+    c.drawString(100, 690, f"Criteria: {criteria}")
+    c.drawString(100, 670, f"Max Grade: {max_grade}")  # Added Max Grade
+    c.drawString(100, 650, f"Student Grade: {grades}")
+    c.drawString(100, 630, f"Feedback: {feedback}")
+
+    c.showPage()
+    c.save()
+    pdf_buffer.seek(0)  # Move cursor to the beginning of the file
+    return pdf_buffer
+
+
+def send_email_bulk(recipient_email, pdf_buffer, filename, student_name):
+    """Sends an email with the generated PDF as an attachment."""
+    try:
+        message = MIMEMultipart()
+        message["From"] = EMAIL_ADDRESS
+        message["To"] = recipient_email
+        message["Subject"] = f"Your Report Card - {student_name}"
+
+        body = f"Dear {student_name},\n\nPlease find your attached report card.\n\nBest regards,\nYour University"
+        message.attach(MIMEText(body, "plain"))
+
+        # Attach PDF
+        part = MIMEBase("application", "octet-stream")
+        part.set_payload(pdf_buffer.read())
+        encoders.encode_base64(part)
+        part.add_header("Content-Disposition", f'attachment; filename="{filename}"')
+        message.attach(part)
+
+        # Send email
+        with smtplib.SMTP(EMAIL_HOST, EMAIL_PORT) as server:
+            server.starttls()
+            server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
+            server.sendmail(EMAIL_ADDRESS, recipient_email, message.as_string())
+
+        return True
+    except Exception as e:
+        print(f"Error sending email to {recipient_email}: {e}")
+        return False
+
+
+@app.route("/bulk-generate", methods=["POST"])
+def bulk_generate():
+    """Reads student data from a CSV, generates PDFs, and emails them."""
+    if "file" not in request.files:
+        return jsonify({"error": "No file provided"}), 400
+
+    file = request.files["file"]
+
+    if not file.filename.endswith(".csv"):
+        return jsonify({"error": "Only CSV files are allowed"}), 400
+
+    try:
+        # Read CSV file
+        df = pd.read_csv(file)
+        required_columns = ["name", "email", "student_id", "criteria", "max_grade", "grades", "feedback"]
+        if not all(col in df.columns for col in required_columns):
+            return jsonify({"error": f"CSV must contain {', '.join(required_columns)}"}), 400
+
+        success_count = 0
+        failed_count = 0
+
+        for _, row in df.iterrows():
+            student_name = row["name"]
+            student_id = row["student_id"]
+            recipient_email = row["email"]
+            criteria = row["criteria"]
+            max_grade = row["max_grade"]  # Added Max Grade
+            grades = row["grades"]
+            feedback = row["feedback"]
+
+            # Generate PDF
+            pdf_buffer = generate_pdf_bulk(student_name, student_id, criteria, max_grade, grades, feedback)
+
+            # Store PDF in MongoDB
+            pdf_id = fs.put(pdf_buffer.getvalue(), filename=f"{student_name}_report.pdf")
+
+            # Send email
+            pdf_buffer.seek(0)  # Reset buffer position for reading
+            email_sent = send_email_bulk(recipient_email, pdf_buffer, f"{student_name}_report.pdf", student_name)
+
+            if email_sent:
+                success_count += 1
+            else:
+                failed_count += 1
+
+            # Reset buffer for next iteration
+            pdf_buffer.close()
+
+        return jsonify({
+            "message": f"Bulk generation completed. {success_count} emails sent, {failed_count} failed."
+        }), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+
+def create_feedback_pdf(template_values):
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter)
+    styles = getSampleStyleSheet()
+    
+    header_style = ParagraphStyle(
+        'CustomHeader',
+        parent=styles['Heading1'],
+        fontSize=16,
+        spaceAfter=30
+    )
+    
+    elements = []
+    
+    # Add title
+    elements.append(Paragraph("Course Feedback Report", header_style))
+    elements.append(Spacer(1, 12))
+    
+    # Student information
+    student_info = [
+        ["Student Name:", template_values['student_name']],
+        ["Student ID:", template_values['student_id']],
+    ]
+    
+    student_table = Table(student_info, colWidths=[100, 400])
+    student_table.setStyle(TableStyle([
+        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+        ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
+        ('FONTSIZE', (0, 0), (-1, -1), 12),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 12),
+    ]))
+    
+    elements.append(student_table)
+    elements.append(Spacer(1, 20))
+    
+    # Assessment Criteria
+    elements.append(Paragraph("Assessment Criteria:", styles['Heading2']))
+    elements.append(Paragraph(template_values['criteria'], styles['Normal']))
+    elements.append(Spacer(1, 12))
+    
+    # Grades
+    elements.append(Paragraph("Grades:", styles['Heading2']))
+    elements.append(Paragraph(f"Maximum Grade: {template_values['max_grade']}", styles['Normal']))
+    elements.append(Paragraph(template_values['grades'], styles['Normal']))
+    elements.append(Spacer(1, 12))
+    
+    # Feedback
+    elements.append(Paragraph("Detailed Feedback:", styles['Heading2']))
+    elements.append(Paragraph(template_values['feedback'], styles['Normal']))
+    
+    doc.build(elements)
+    buffer.seek(0)
+    return buffer
+
+@app.route('/generate-feedback', methods=['POST'])
+def generate_feedback():
+    try:
+        data = request.json
+        template_values = data['templateValues']
+        user_id = data.get('user_id')  # ✅ Read from the request body
+        
+        if not user_id:
+            return jsonify({'error': 'User ID is required'}), 400
+        
+        # Generate PDF
+        pdf_buffer = create_feedback_pdf(template_values)
+        
+        # Create filename
+        filename = f"feedback_{template_values['student_name'].replace(' ', '_')}.pdf"
+        
+        # Store in GridFS with metadata matching the schema
+        file_id = fs.put(
+            pdf_buffer,
+            filename=filename,
+            userId=user_id,
+            type="populated",
+            chunkSize=261120,  # Matching your schema's chunk size
+        )
+        
+        return jsonify({
+            'message': 'Feedback generated successfully',
+            'pdf_id': str(file_id),
+            'feedback': template_values['feedback'],
+            'pdfUrl': f'/download/{str(file_id)}'
+        }), 200
+        
+    except Exception as e:
+        print(f"Error: {str(e)}")
+        return jsonify({'error': 'Failed to generate feedback'}), 500
 
 
 

@@ -7,8 +7,10 @@ const FileUpload = () => {
   const { user } = useUser(); // Get authenticated user from Clerk
   const [file, setFile] = useState(null);
   const [template, setTemplate] = useState("");
+  const [templateValues, setTemplateValues] = useState({});
   const [message, setMessage] = useState("");
   const [populatedTemplate, setPopulatedTemplate] = useState("");
+  const [showTemplateEditor, setShowTemplateEditor] = useState(false);
   const [pdfUrl, setPdfUrl] = useState("");
   const [pdfId, setPdfId] = useState("");
   const [email, setEmail] = useState("");
@@ -20,16 +22,31 @@ const FileUpload = () => {
     navigate("/word-to-pdf");
   };
 
+  const navigateToBulkGenerator = () => {
+    navigate("/bulk-generator");
+  };
+
   const handleViewHistory = () => {
     navigate("/pdf-history");
   };
 
-  const handleCcEmailChange = (event) => {
-    setCcEmails(event.target.value);
+  const navigateToCourseFeedback = () => {
+    navigate("/course-feedback");
   };
 
   const handleFileChange = (event) => {
     setFile(event.target.files[0]);
+  };
+  const handleCcEmailChange = (event) => {
+    setCcEmails(event.target.value);
+  };
+
+
+  const handleInputChange = (event, field) => {
+    setTemplateValues((prevValues) => ({
+      ...prevValues,
+      [field]: event.target.value,
+    }));
   };
 
   const handleTemplateChange = (event) => {
@@ -73,7 +90,7 @@ const FileUpload = () => {
       if (response.ok) {
         setMessage(result.message || "Upload successful!");
         setPopulatedTemplate(result.populated_template || "");
-        setPdfUrl(`http://127.0.0.1:5000/download/${result.pdf_id}`);
+        setPdfUrl("http://127.0.0.1:5000/download/${result.pdf_id}"); // ✅ Use pdfId instead of filename
         setPdfId(result.pdf_id);
       } else {
         setMessage(result.error || "Upload failed.");
@@ -161,6 +178,18 @@ const FileUpload = () => {
           >
             Word to PDF Converter
           </button>
+          <button
+            onClick={navigateToBulkGenerator}
+            className="text-black py-2 px-4 rounded-xl border-2 hover:bg-black hover:text-white hover:cursor-pointer"
+          >
+            Bulk Generator
+          </button>
+          {/* <button
+            onClick={navigateToCourseFeedback}
+            className="text-black py-2 px-4 rounded-xl border-2 hover:bg-black hover:text-white hover:cursor-pointer"
+          >
+            Generate Course Feedback
+          </button> */}
         </div>
 
         {file && <p className="mt-2 text-lg">Selected File: {file.name}</p>}
